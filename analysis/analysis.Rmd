@@ -1,0 +1,949 @@
+---
+title: "Imputation"
+author: "Nicolas Banholzer"
+date: "2023-12-22"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Libraries
+
+```{r libraries}
+library(tidyverse)
+library(rstan)
+library(tidybayes)
+library(reshape2)
+source("utils/plotting.r")
+source("utils/tex.R")
+```
+
+## Data
+
+```{r data}
+# site characteristics
+site_char <- readRDS("data-clean/site-characteristics.rds")
+
+# quarterly case data
+qtr_df <- readRDS("data-clean/quarterly-data.rds") %>%
+  group_by(record_id) %>%
+  arrange(year_quart) %>%
+  mutate(time = 1:n()) %>%
+  ungroup()
+
+# annual case data
+ann_df <- readRDS("data-clean/annual-data.rds")
+
+# combine quarterly and annual case data
+comb_df <- qtr_df %>%
+  dplyr::select(record_id, year, quarter, year_quart, new, art, genex, tpt) %>%
+  left_join(
+    ann_df %>%
+      dplyr::select(record_id, year, new, art, genex, tpt) %>%
+      mutate(across(c(new, art, genex, tpt), ~ .x / 4)),
+    by = c("record_id", "year")
+  ) %>%
+  mutate(
+    new = ifelse(is.na(new.x), new.y, new.x),
+    art = ifelse(is.na(art.x), art.y, art.x),
+    tpt = ifelse(is.na(tpt.x), tpt.y, tpt.x),
+    genex = ifelse(is.na(genex.x), genex.y, genex.x)
+  ) %>%
+  dplyr::select(-matches("[[:punct:]]x"), -matches("[[:punct:]]y")) %>%
+  left_join(
+    site_char %>%
+      dplyr::select(record_id, matches("site_")),
+    by = "record_id"
+  )
+
+# simple imputation
+comb_df_imp <- comb_df %>%
+  group_by(record_id) %>%
+  arrange(year_quart) %>%
+  fill(new, art, genex, tpt, .direction = "downup") %>%
+  ungroup()
+```
+
+
+## Descriptives
+
+### Site characteristics
+
+```{r site}
+char_vars <- c(
+  "Region" = "site_region",
+  "Clinic setting" = "site_setting",
+  "Clinic owner" = "site_owner",
+  "Level of care" = "site_carelevel",
+  "Age of treated patients" = "site_treated",
+  "Type of treated patients" = "site_patients",
+  "TB-HIV service integration" = "site_integration"
+)
+
+site_tab <- tibble(variable = character(), value = character())
+
+for (var in char_vars) {
+  if (is.factor(site_char[[var]])) {
+    counts <- as.numeric(table(site_char[[var]]))
+    perc_counts <- round(counts / sum(counts) * 100)
+    val <- paste0(counts, " (", perc_counts, "%)")
+    names_counts <- firstup(names(table(site_char[[var]])))
+    new_row <- tibble(
+      variable = c(
+        firstup(names(char_vars)[char_vars == var]),
+        paste0("   ", names_counts)
+      ),
+      value = c("", val)
+    )
+  } else if (is.character(site_char[[var]])) {
+    new_row <- tibble(
+      variable = c("", firstup(names(char_vars)[char_vars == var])),
+      value = c("", "")
+    )
+  } else {
+    stop(sprintf("Incorrect variable type for %s", var))
+  }
+  site_tab <- rbind(site_tab, new_row)
+}
+
+site_tab <- rbind(
+  c("variable" = "Variable", "value" = paste0("N=", nrow(site_char))),
+  site_tab
+)
+
+write.table(
+  data.frame(site_tab),
+  file = "results/table-site-characteristics.txt",
+  row.names = FALSE, col.names = FALSE,
+  sep = ",", quote = FALSE
+)
+```
+
+### IPC measures
+
+```{r ipc}
+ipc_masks_names <- c(
+  "Staff" = "Staff: any mask wearing",
+  "Patients" = "Patients: any mask wearing"
+)
+
+ipc_labs <- c(
+  "before",
+  "since",
+  "during",
+  "never",
+  "unknown",
+  "not applicable"
+)
+
+ipc_masks <- site_char %>%
+  dplyr::select(record_id, matches("ipc_masks_")) %>%
+  melt("record_id") %>%
+  mutate(
+    group = ifelse(grepl("staff", variable), "Staff", "Patients"),
+    vlaue = ordered(value, levels = ipc_labs)
+  ) %>%
+  group_by(record_id, group) %>%
+  summarise(
+    value = min(value)
+  ) %>%
+  ungroup() %>%
+  mutate(
+    group = recode(group, !!!ipc_masks_names)
+  ) %>%
+  rename(variable = group)
+
+ipc_other_names <- c(
+  "ipc_phys_dist" = "Physical distancing",
+  "ipc_triage" = "Patient triage",
+  "ipc_vent" = "Natural ventilation",
+  "ipc_fixed_app" = "Fixed appointments",
+  "ipc_sep_wr" = "Separate waiting rooms",
+  "ipc_open_wr" = "Outside waiting room"
+)
+
+ipc_other <- site_char %>%
+  dplyr::select(record_id, matches("ipc_"), -matches("masks_")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!ipc_other_names)
+  )
+
+ipc_measrs <- rbind(ipc_masks, ipc_other) %>%
+  mutate(
+    variable = factor(
+      variable,
+      levels = rev(c(ipc_other_names, ipc_masks_names))
+    )
+  )
+```
+
+### Shortages
+
+```{r shortages}
+short_names <- c(
+  "short_changes_staff" = "Staff shortages",
+  "short_changes_hrs" = "Reduced opening hours",
+  "short_restrict_tb_tr" = "Delayed TB treatment",
+  "short_restrict_tb_ct" = "Restricted TB contact tracing",
+  "short_drug" = "Drug shortages (ARVs or anti-TB)"
+)
+
+
+short_labels <- ipc_labels <- c(
+  "since" = "Since pandemic",
+  "after" = "Since pandemic",
+  "during" = "During pandemic",
+  "yes" = "During pandemic",
+  "no" = "No",
+  "never" = "No",
+  "unknown" = "Not known or appl.",
+  "not applicable" = "Not known or appl."
+)
+
+site_char_drug <- site_char %>%
+  dplyr::select(matches("drugs_")) %>%
+  mutate_all(~ ifelse(.x == "yes", 1,
+    ifelse(.x == "not applicable", NA, 0)
+  )) %>%
+  mutate(
+    short_drug = rowSums(., na.rm = TRUE),
+    short_drug = ifelse(is.na(short_drug), "not applicable",
+      ifelse(short_drug > 0, "yes", "no")
+    )
+  )
+
+site_short <- site_char %>%
+  dplyr::select(record_id, matches("short_"), -matches("drugs_")) %>%
+  bind_cols(short_drug = site_char_drug$short_drug) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!short_names),
+    variable = factor(variable, levels = rev(unique(short_names)))
+  )
+```
+
+### Care 
+
+```{r care}
+care_names <- c(
+  "care_restr_addr_drugs" = "Longer dispensing periods",
+  "care_restr_addr_tele" = "Telehealth services",
+  "care_dot_virt_cl" = "Virtual DOT",
+  "care_restr_addr_diff" = "Differentiated services"
+)
+
+care_lab <- c(
+  "since" = "Since pandemic",
+  "during" = "During pandemic",
+  "never" = "No",
+  "unknown" = "Not known or appl.",
+  "not applicable" = "Not known or appl."
+)
+
+care <- site_char %>%
+  dplyr::select(
+    record_id,
+    care_restr_addr_drugs,
+    care_restr_addr_tele,
+    care_dot_virt_cl,
+    care_restr_addr_diff
+  ) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!care_names),
+    variable = factor(variable, levels = rev(care_names))
+  )
+```
+
+```{r plot}
+types <- c(
+  "Have you implemented any IPC measures?",
+  "Have you experienced any staff- or drug-related shortages?",
+  "Have you implemented any changes in care provision?"
+)
+
+val_labs <- c(
+  "before" = "Before pandemic",
+  "since" = "Since pandemic",
+  "after" = "Since pandemic",
+  "during" = "During pandemic",
+  "yes" = "During pandemic",
+  "no" = "No",
+  "never" = "No",
+  "unknown" = "Not known or appl.",
+  "not applicable" = "Not known or appl."
+)
+
+site_surv <- rbind(
+  ipc_measrs %>% mutate(type = types[1]),
+  site_short %>% mutate(type = types[2]),
+  care %>% mutate(type = types[3])
+) %>%
+  mutate(
+    value = recode(value, !!!val_labs),
+    value = factor(value, levels = rev(unique(val_labs))),
+    type = factor(type, levels = types)
+  ) %>%
+  group_by(type, variable, value) %>%
+  summarize(n = n()) %>%
+  ungroup()
+
+cols <- c(
+  wes_palette("Chevalier1")[1],
+  wes_palette("Darjeeling2")[2],
+  # wes_palette("Zissou1")[1],
+  wes_palette("Darjeeling2")[4],
+  wes_palette("Zissou1")[4],
+  "grey80"
+)
+
+site_surv_pl <- site_surv %>%
+  ggplot(aes(y = variable, x = n, fill = value)) +
+  ggforce::facet_col(type ~ ., scales = "free", space = "free") +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(
+    aes(label = n),
+    position = position_stack(vjust = .5),
+    size = 8 / cm(1),
+    color = "white"
+  ) +
+  scale_fill_manual(values = rev(cols)) +
+  coord_cartesian(expand = FALSE) +
+  theme_custom() +
+  theme(
+    legend.position = "top",
+    legend.direction = "horizontal",
+    legend.title = element_blank(),
+    legend.title.align = 0,
+    axis.title = element_blank(),
+    legend.key.width = unit(.19, "cm"),
+    legend.key.height = unit(.3, "cm")
+  ) +
+  guides(fill = guide_legend(nrow = 1, reverse = TRUE))
+
+save_plot(
+  site_surv_pl,
+  pdf_file = "results/survey.png",
+  w = 16,
+  h = 18
+)
+```
+
+### Case outcomes
+
+```{r global}
+comb_df_imp %>%
+  group_by(year_quart) %>%
+  summarize(
+    new = sum(new, na.rm = TRUE),
+    art = sum(art, na.rm = TRUE),
+    genex = sum(genex, na.rm = TRUE),
+    tpt = sum(tpt, na.rm = TRUE)
+  ) %>%
+  melt("year_quart") %>%
+  ggplot(aes(x = year_quart, y = value)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y") +
+  coord_cartesian(expand = FALSE) +
+  theme_custom()
+```
+
+```{r region}
+comb_df_imp %>%
+  group_by(year, site_region) %>%
+  summarize(
+    new = sum(new, na.rm = TRUE),
+    art = sum(art, na.rm = TRUE),
+    genex = sum(genex, na.rm = TRUE),
+    tpt = sum(tpt, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  group_by(site_region) %>%
+  arrange(year) %>%
+  mutate(across(c(new, art, genex, tpt), ~ 100 * .x / .x[1])) %>%
+  ungroup() %>%
+  melt(c("year", "site_region")) %>%
+  ggplot(aes(x = year, y = value, color = site_region)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y") +
+  coord_cartesian(expand = FALSE) +
+  theme_custom()
+```
+
+```{r within-region}
+comb_df_imp %>%
+  group_by(year, site_region, record_id) %>%
+  summarize(
+    new = sum(new, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  group_by(record_id, site_region) %>%
+  arrange(year) %>%
+  mutate(new = 100 * new / new[1]) %>%
+  ungroup() %>%
+  ggplot(aes(x = year, y = new, color = factor(record_id))) +
+  geom_line() +
+  facet_wrap(~site_region, scales = "free_y") +
+  coord_cartesian(expand = FALSE) +
+  theme_custom()
+```
+
+```{r within-country}
+comb_df_imp %>%
+  group_by(year, site_country, record_id) %>%
+  summarize(
+    new = sum(new, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  group_by(record_id, site_country) %>%
+  arrange(year) %>%
+  mutate(new = 100 * new / new[1]) %>%
+  ungroup() %>%
+  ggplot(aes(x = year, y = new, color = factor(record_id))) +
+  geom_line() +
+  facet_wrap(~site_country, scales = "free_y") +
+  coord_cartesian(expand = FALSE) +
+  theme_custom()
+```
+
+```{r within-site-char}
+# overall correlation
+new_df <- comb_df_imp %>%
+  group_by(record_id) %>%
+  mutate(all_na = all(is.na(new))) %>%
+  ungroup() %>%
+  filter(!all_na)
+
+site_cor <- new_df %>%
+  dplyr::select(record_id, year_quart, new) %>%
+  dcast(year_quart ~ record_id) %>%
+  dplyr::select(-year_quart) %>%
+  as.matrix()
+
+overall_cor <- cor(site_cor, method = "spearman")
+overall_cor <- round(mean(overall_cor[lower.tri(overall_cor)]), 2)
+
+cor_by_group <- function(variable) {
+  cat <- as.character(unique(new_df[[variable]]))
+
+  cat_cor <- c()
+  for (i in 1:length(cat)) {
+    cor_mat <- new_df %>%
+      filter(!!sym(variable) == cat[i]) %>%
+      dplyr::select(record_id, year_quart, new) %>%
+      dcast(year_quart ~ record_id) %>%
+      dplyr::select(-year_quart) %>%
+      as.matrix() %>%
+      cor(method = "spearman")
+
+    correl <- cor_mat[lower.tri(cor_mat)]
+
+    cat_cor[i] <- round(mean(correl), 2)
+  }
+
+  paste0(
+    paste0(c("Overall", cat), ": "),
+    c(overall_cor, cat_cor),
+    collapse = "     "
+  )
+}
+
+cor_by_group("site_region")
+cor_by_group("site_country")
+cor_by_group("site_setting")
+cor_by_group("site_treated")
+cor_by_group("site_patients")
+cor_by_group("site_integration")
+cor_by_group("site_carelevel")
+cor_by_group("site_owner")
+```
+
+## Imputation
+
+### Prepare data
+
+```{r prep}
+prep_data <- function(outcome, exclude_ids = NULL) {
+  if (!is.null(exclude_ids)) {
+    comb_df_filt <- comb_df %>%
+      filter(!(record_id %in% exclude_ids))
+  } else {
+    comb_df_filt <- comb_df
+  }
+
+  qadf <- comb_df_filt %>%
+    group_by(record_id) %>%
+    arrange(year, quarter) %>%
+    mutate(
+      time = 1:n(),
+      all_na = all(is.na(!!sym(outcome)))
+    ) %>%
+    ungroup() %>%
+    filter(!all_na) %>%
+    arrange(record_id, time) %>%
+    mutate(ind = 1:n()) %>%
+    rename(y = !!sym(outcome))
+
+  qadf <- qadf %>%
+    left_join(
+      qtr_df %>%
+        dplyr::select(record_id, year, quarter, !!sym(outcome)),
+      by = c("record_id", "year", "quarter")
+    ) %>%
+    left_join(
+      ann_df %>%
+        dplyr::select(record_id, year, !!sym(outcome)),
+      by = c("record_id", "year")
+    ) %>%
+    mutate(
+      across(
+        c(site_region, site_country, time, year, quarter),
+        ~ as.integer(factor(.x)),
+        .names = "{.col}_ind"
+      ),
+      year_ind = year - min(year) + 1,
+      record_id = as.integer(factor(record_id))
+    )
+
+
+  # create stan data frame
+  sdf <- list()
+
+  # indices
+  sdf$N <- nrow(qadf)
+  sdf$N_times <- n_distinct(qadf$time)
+  sdf$N_years <- n_distinct(qadf$year)
+  sdf$N_sites <- n_distinct(qadf$record_id)
+  sdf$N_countries <- n_distinct(qadf$site_country)
+  sdf$N_regions <- n_distinct(qadf$site_region)
+
+  # groups
+  sdf$time_ind <- qadf$time_ind
+  sdf$year_ind <- qadf$year_ind
+  sdf$quarter_ind <- qadf$quarter
+  sdf$site_ind <- qadf$record_id
+  sdf$region_ind <- qadf$site_region_ind
+  sdf$country_ind <- qadf$site_country_ind
+  sdf$site_region_ind <- qadf %>%
+    group_by(record_id) %>%
+    slice(1) %>%
+    ungroup() %>%
+    arrange(record_id) %>%
+    dplyr::select(site_region_ind) %>%
+    unlist()
+  sdf$site_country_ind <- qadf %>%
+    group_by(record_id) %>%
+    slice(1) %>%
+    ungroup() %>%
+    arrange(record_id) %>%
+    dplyr::select(site_country_ind) %>%
+    unlist()
+
+  # time
+  sdf$time_year_ind <- qadf %>%
+    group_by(time_ind) %>%
+    slice(1) %>%
+    ungroup() %>%
+    arrange(time_ind) %>%
+    dplyr::select(year_ind) %>%
+    unlist()
+  sdf$time_quart_ind <- qadf %>%
+    group_by(time_ind) %>%
+    slice(1) %>%
+    ungroup() %>%
+    arrange(time_ind) %>%
+    dplyr::select(quarter_ind) %>%
+    unlist()
+
+  # outcome
+  sdf$y <- qadf[["y"]]
+  sdf$y <- ifelse(is.na(sdf$y), -1, sdf$y)
+  sdf$missing <- ifelse(!is.na(qadf[[paste0(outcome, ".x")]]), 0,
+    ifelse(is.na(qadf[[paste0(outcome, ".y")]]), -1, 1)
+  )
+  sdf$K_missing <- sum(sdf$missing < 0)
+  sdf$J_missing_quart <- sum(sdf$missing > 0)
+  sdf$missing_ind <- numeric(sdf$N)
+  sdf$missing_quart_group_ind <- numeric(sdf$N)
+  k <- 0
+  j <- 0
+  j_g <- 1
+  for (n in 1:sdf$N) {
+    if (sdf$missing[n] < 0) {
+      k <- k + 1
+      sdf$missing_ind[n] <- k
+    }
+    if (sdf$missing[n] > 0) {
+      j <- j + 1
+      sdf$missing_ind[n] <- j
+      sdf$missing_quart_group_ind[n] <- j_g
+      j_g <- j_g + ifelse(j %% 4 == 0, 1, 0)
+    }
+  }
+  sdf$J_missing_years <- max(sdf$missing_quart_group_ind)
+  sdf$y_annual <- c()
+  for (j in 1:sdf$J_missing_years) {
+    sdf$y_annual[j] <- sum(sdf$y[sdf$missing_quart_group_ind == j])
+  }
+
+  return(list(dat = qadf, stan_dat = sdf))
+}
+```
+
+### Model setup
+
+```{r}
+seed <- 12345
+model_file <- "models/imputation-hierarchical-gp.stan"
+nc <- 4
+chains <- 4
+iterations <- 2000
+```
+
+```{r}
+get_estimates <- function(dat, stan_dat, mod) {
+  # observed data
+  df_obs <- dat %>%
+    dplyr::select(
+      "ind",
+      "record_id",
+      "year",
+      "year_quart",
+      "site_region",
+      "site_country",
+      "site_carelevel",
+      "site_integration",
+      "y"
+    )
+
+  # empty forecast data
+  df_fcat <- expand.grid(
+    record_id = sort(unique(stan_dat$site_ind)),
+    year_quart = max(df_obs$year) + 1 + c(.25, .50, .75, 1)
+  ) %>%
+    arrange(record_id) %>%
+    mutate(
+      year = floor(year_quart),
+      ind = max(df_obs$ind) + 1:n()
+    )
+
+  # combine
+  df_obs <- rbind(
+    dplyr::select(df_obs, record_id, year, year_quart, ind),
+    df_fcat
+  ) %>%
+    left_join(df_obs, by = c("ind", "record_id", "year", "year_quart")) %>%
+    group_by(record_id) %>%
+    fill(
+      site_region, site_country,
+      site_carelevel, site_integration,
+      .direction = "downup"
+    ) %>%
+    mutate(
+      site_carelevel = factor(
+        ifelse(site_carelevel == "tertiary", "Tertiary", "Primary/Secondary"),
+        levels = c("Primary/Secondary", "Tertiary")
+      ),
+      site_integration = factor(
+        ifelse(site_integration == "full", "Fully integrated", "Not integrated"),
+        levels = c("Not integrated", "Fully integrated")
+      ),
+      site_region = factor(
+        ifelse(site_region == "Asia-Pacific", "Asia-Pacific", "Africa"),
+        levels = c("Asia-Pacific", "Africa")
+      )
+    )
+
+  # get predictions
+  df_pred <- spread_draws(mod, y_pred[ind]) %>%
+    rename(pred = y_pred) %>%
+    left_join(df_obs, by = c("ind")) %>%
+    mutate(
+      year_quart = ifelse(is.na(year_quart), year, year_quart),
+      record_id = paste0(record_id, ": ", site_country, " (", site_region, ")")
+    )
+
+  return(df_pred)
+}
+```
+
+### Models
+
+#### New
+
+```{r model}
+df_new <- prep_data("new")
+
+m_new <- stan(
+  file = model_file,
+  chains = chains,
+  iter = iterations,
+  cores = nc,
+  seed = seed,
+  data = df_new$stan_dat
+)
+```
+
+```{r check}
+summary(
+  m_new,
+  pars = c(
+    "tot_var", "prop_var",
+    "sigma_region", "sigma_country",
+    "length_GP_site_short", "length_GP_site_long",
+    "length_GP_region_short", "length_GP_region_long",
+    "sigma_GP_site_short", "sigma_GP_site_long",
+    "sigma_GP_region_short",
+    "sigma_GP_region_long",
+    "alpha"
+  )
+)$summary %>%
+  round(3)
+
+m_new %>%
+  spread_draws(site_re[k]) %>%
+  ggplot(aes(y = factor(k), x = site_re)) +
+  stat_pointinterval() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed")
+
+m_new %>%
+  spread_draws(country_re[site_country_ind]) %>%
+  left_join(df_new$dat %>% dplyr::select(site_country_ind, site_country)) %>%
+  ggplot(aes(y = site_country, x = country_re)) +
+  stat_pointinterval() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed")
+
+m_new %>%
+  spread_draws(region_re[site_region_ind]) %>%
+  left_join(df_new$dat %>% dplyr::select(site_region_ind, site_region)) %>%
+  ggplot(aes(y = site_region, x = region_re)) +
+  stat_pointinterval() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed")
+
+m_new %>%
+  spread_draws(
+    sigma_GP_site_short, sigma_GP_region_short,
+    sigma_GP_site_long, sigma_GP_region_long
+  ) %>%
+  dplyr::select(
+    sigma_GP_site_short, sigma_GP_region_short,
+    sigma_GP_site_long, sigma_GP_region_long
+  ) %>%
+  gather() %>%
+  ggplot(aes(y = key, x = value)) +
+  stat_pointinterval() +
+  geom_vline(aes(xintercept = 0), linetype = "dashed")
+```
+
+```{r fit}
+# get estimates/predictions
+pred_new <- get_estimates(df_new$dat, df_new$stan_dat, m_new)
+
+# plot model fit
+ggplot(mapping = aes(x = year_quart)) +
+  stat_lineribbon(
+    data = pred_new,
+    mapping = aes(y = pred),
+    .width = c(.5, .95)
+  ) +
+  geom_line(
+    data = pred_new %>% group_by(record_id, year_quart) %>% slice(1),
+    mapping = aes(y = y),
+    color = "red"
+  ) +
+  facet_wrap(~record_id, scales = "free_y") +
+  scale_fill_brewer()
+```
+
+#### ART
+
+```{r model}
+df_art <- prep_data("art")
+
+m_art <- stan(
+  file = model_file,
+  chains = chains,
+  iter = iterations,
+  cores = nc,
+  seed = seed,
+  data = df_art$stan_dat
+)
+```
+
+```{r fit}
+# get estimates/predictions
+pred_art <- get_estimates(df_art$dat, df_art$stan_dat, m_art)
+
+# plot model fit
+ggplot(mapping = aes(x = year_quart)) +
+  stat_lineribbon(
+    data = pred_art,
+    mapping = aes(y = pred),
+    .width = c(.5, .95)
+  ) +
+  geom_line(
+    data = pred_art %>% group_by(record_id, year_quart) %>% slice(1),
+    mapping = aes(y = y),
+    color = "red"
+  ) +
+  facet_wrap(~record_id, scales = "free_y") +
+  scale_fill_brewer()
+```
+
+#### Genex
+
+```{r model}
+df_genex <- prep_data("genex")
+
+m_genex <- stan(
+  file = model_file,
+  chains = chains,
+  iter = iterations,
+  cores = nc,
+  seed = seed,
+  data = df_genex$stan_dat
+)
+```
+
+```{r fit}
+# get estimates/predictions
+pred_genex <- get_estimates(df_genex$dat, df_genex$stan_dat, m_genex)
+
+# plot model fit
+ggplot(mapping = aes(x = year_quart)) +
+  stat_lineribbon(
+    data = pred_genex,
+    mapping = aes(y = pred),
+    .width = c(.5, .95)
+  ) +
+  geom_line(
+    data = pred_genex %>% group_by(record_id, year_quart) %>% slice(1),
+    mapping = aes(y = y),
+    color = "red"
+  ) +
+  facet_wrap(~record_id, scales = "free_y") +
+  scale_fill_brewer()
+```
+
+### Plot imputed outcomes
+
+```{r plot}
+pred_df <- bind_rows(
+  pred_new %>%
+    mutate(outcome = "Newly diagnosed TB cases") %>%
+    mutate(subgroup = "Global"),
+  pred_new %>%
+    mutate(outcome = "Newly diagnosed TB cases") %>%
+    mutate(subgroup = site_region),
+  pred_new %>%
+    mutate(outcome = "Newly diagnosed TB cases") %>%
+    mutate(subgroup = site_integration),
+  pred_art %>%
+    mutate(outcome = "New patients on ART") %>%
+    mutate(subgroup = "Global"),
+  pred_art %>%
+    mutate(outcome = "New patients on ART") %>%
+    mutate(subgroup = site_region),
+  pred_art %>%
+    mutate(outcome = "New patients on ART") %>%
+    mutate(subgroup = site_integration),
+  pred_genex %>%
+    mutate(outcome = "Number of GeneXpert done") %>%
+    mutate(subgroup = "Global"),
+  pred_genex %>%
+    mutate(outcome = "Number of GeneXpert done") %>%
+    mutate(subgroup = site_region),
+  pred_genex %>%
+    mutate(outcome = "Number of GeneXpert done") %>%
+    mutate(subgroup = site_integration)
+)
+
+outcome_lab <- c(
+  "Newly diagnosed TB cases" = "New TB cases",
+  "New patients on ART" = "New patients on ART",
+  "Number of GeneXpert done" = "Number of GeneXpert done"
+)
+
+subgroup_lab <- c(
+  "Global" = "Global",
+  "Africa" = "Africa",
+  "Asia-Pacific" = "Asia Pacific",
+  "Fully integrated" = "TB-HIV fully integrated",
+  "Not integrated" = "TB-HIV partially integrated"
+)
+
+est_cases <- pred_df %>%
+  group_by(.draw, year_quart, outcome, subgroup) %>%
+  summarize(pred = sum(pred)) %>%
+  ungroup() %>%
+  group_by(year_quart, outcome, subgroup) %>%
+  median_qi() %>%
+  ungroup() %>%
+  mutate(
+    forecast = ifelse(year_quart > 2023.25, "Forecast", "Observed"),
+    forecast = factor(forecast, levels = c("Forecast", "Observed"))
+  ) %>%
+  group_by(outcome, subgroup) %>%
+  mutate(type = data.table::rleid(forecast)) %>%
+  ungroup() %>%
+  mutate(
+    outcome = recode(outcome, !!!outcome_lab),
+    subgroup = recode(subgroup, !!!subgroup_lab),
+    outcome = factor(outcome, levels = outcome_lab),
+    subgroup = factor(subgroup, levels = subgroup_lab)
+  )
+
+est_cases <- rbind(
+  est_cases,
+  est_cases[est_cases$year_quart == 2023.25, ] %>%
+    mutate(type = 2, forecast = "Forecast")
+)
+
+pl <- ggplot(
+  data = est_cases,
+  mapping = aes(x = year_quart - .25)
+) +
+  geom_line(aes(y = pred, color = forecast, group = type)) +
+  geom_ribbon(
+    aes(
+      ymin = .lower, ymax = .upper,
+      fill = forecast, group = type
+    ),
+    alpha = .25
+  ) +
+  facet_wrap(
+    outcome ~ subgroup,
+    dir = "v",
+    ncol = 3,
+    scales = "free"
+  ) +
+  scale_color_manual(values = c("darkred", "black")) +
+  scale_fill_manual(values = c("darkred", "black")) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0, 0)),
+    breaks = seq(2018, 2024, 2)
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    labels = scales::comma
+  ) +
+  labs(
+    fill = "CrI"
+  ) +
+  theme_custom() +
+  theme(
+    legend.position = "none",
+    axis.title = element_blank(),
+    panel.spacing = unit(.5, "cm"),
+    strip.text = element_text(size = 8, face = 2, margin = margin(b = 5.5)),
+  )
+
+save_plot(
+  pl,
+  pdf_file = "results/imputed-outcomes.png",
+  w = 16, h = 22
+)
+```
