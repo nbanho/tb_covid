@@ -88,153 +88,152 @@ site <- raw_df %>%
 #### IPC measures ####
 
 ipc <- raw_df %>%
-  mutate(
-    across(
-      c(
-        matches("distance_"),
-        matches("envmt_"),
-        matches("msr_")
-      ),
-      ~ ifelse(grepl("Already in place", .x), "before",
-        ifelse(grepl("Only in place", .x), "during",
-          ifelse(grepl("maintained", .x), "since",
-            ifelse(grepl("Never", .x), "never",
-              ifelse(grepl("Information", .x), "unknown", "not applicable")
-            )
-          )
-        )
-      )
-    ),
-    across(
-      c(
-        matches("distance_"),
-        matches("envmt_"),
-        matches("msr_"),
-        matches("changes_")
-      ),
-      ~ factor(.x, levels = c(
-        "never", "before",
-        "during", "since",
-        "unknown", "not applicable"
-      ))
-    )
-  ) %>%
-  rename(
-    ipc_fixed_app = distance_fixed_app,
-    ipc_sep_wr = distance_wr_sep,
-    ipc_open_wr = distance_wr_open,
-    ipc_triage = distance_triage,
-    ipc_vent = envmt_vent,
-    ipc_phys_dist = distance_phys,
-    ipc_masks_staff_comm = msr_staff_comm_masks,
-    ipc_masks_pat_comm = msr_patients_comm_masks,
-    ipc_masks_staff_surg = msr_staff_surg_masks,
-    ipc_masks_pat_surg = msr_patients_surg_masks,
-    ipc_masks_staff_ffp2 = msr_staff_ffp2,
-    ipc_masks_pat_ffp2 = msr_patients_ffp2
-  ) %>%
-  dplyr::select(matches("ipc_"))
-
-
-#### Shortages ####
-
-short <- raw_df %>%
-  mutate(
-    across(
-      c(changes_staff, changes_hrs),
-      ~ ifelse(grepl("Only during", .x), "during",
-        ifelse(grepl("Started during", .x), "since",
-          ifelse(grepl("Started after", .x), "after",
-            ifelse(grepl("Not observed", .x), "never",
-              ifelse(grepl("Information", .x), "unknown", "not applicable")
-            )
-          )
-        )
-      )
-    ),
-    across(
-      c(restr_tb_tr, restr_tb_ct),
-      ~ ifelse(.x == "Yes", "yes", ifelse(.x == "No", "no", "not applicable"))
-    ),
-    across(
-      c(
-        short_drugs_fla, short_drugs_sla,
-        short_drugs_pra, short_drugs_pa,
-        short_drugs_fltb, short_drugs_sltb
-      ),
-      ~ ifelse(.x == "Yes", "yes", ifelse(.x == "No", "no", "not applicable"))
-    ),
-    across(
-      c(
-        restr_tb_tr, restr_tb_ct,
-        short_drugs_fla, short_drugs_sla,
-        short_drugs_pra, short_drugs_pa,
-        short_drugs_fltb, short_drugs_sltb
-      ),
-      ~ factor(.x, levels = c("yes", "no", "not applicable"))
-    )
-  ) %>%
-  rename(
-    short_changes_staff = changes_staff,
-    short_changes_hrs = changes_hrs,
-    short_restrict_tb_tr = restr_tb_tr,
-    short_restrict_tb_ct = restr_tb_ct
-  ) %>%
   dplyr::select(
-    short_changes_hrs, short_changes_staff,
-    short_restrict_tb_ct, short_restrict_tb_tr,
-    short_drugs_fla, short_drugs_sla,
-    short_drugs_pra, short_drugs_pa,
-    short_drugs_fltb, short_drugs_sltb
-  )
-
-
-#### Care provision ####
-
-care <- raw_df %>%
-  mutate(
-    across(
-      c(
-        changes_dot_virt_cl,
-        tb_restr_addr_drugs,
-        tb_restr_addr_tele,
-        tb_restr_addr_diff
-      ),
-      ~ ifelse(grepl("Only in place", .x), "during",
+    matches("distance_"),
+    matches("envmt_"),
+    matches("msr_")
+  ) %>%
+  mutate_all(
+    ~ ifelse(grepl("Already in place", .x), "before",
+      ifelse(grepl("Only in place", .x), "during",
         ifelse(grepl("maintained", .x), "since",
           ifelse(grepl("Never", .x), "never",
             ifelse(grepl("Information", .x), "unknown", "not applicable")
           )
         )
       )
-    ),
-    across(
-      c(
-        changes_dot_virt_cl,
-        tb_restr_addr_drugs,
-        tb_restr_addr_tele,
-        tb_restr_addr_diff
-      ),
-      ~ factor(.x, levels = c(
-        "never",
-        "during", "since",
-        "unknown", "not applicable"
-      ))
     )
   ) %>%
-  rename(
-    care_dot_virt_cl = changes_dot_virt_cl,
-    care_restr_addr_drugs = tb_restr_addr_drugs,
-    care_restr_addr_tele = tb_restr_addr_tele,
-    care_restr_addr_diff = tb_restr_addr_diff
+  mutate_all(
+    ~ factor(.x, levels = c(
+      "never", "before",
+      "during", "since",
+      "unknown", "not applicable"
+    ))
   ) %>%
-  dplyr::select(matches("care_"))
+  dplyr::select(
+    -distance_other,
+    -distance_other_spec,
+    -envmt_other,
+    -envmt_other_spec,
+    -msr_staff_other,
+    -msr_staff_other_spec,
+    -msr_patients_other,
+    -msr_patients_other_spec
+  )
+
+#### Changes care provision #####
+
+changes <- raw_df %>%
+  dplyr::select(
+    matches("changes_"),
+    -matches("changes_dot"),
+    -dot_changes_other_spec
+  ) %>%
+  mutate_all(
+    ~ ifelse(grepl("Only during", .x), "during",
+      ifelse(grepl("Started during", .x), "since",
+        ifelse(grepl("Started after", .x), "after",
+          ifelse(grepl("Not observed", .x), "never",
+            ifelse(grepl("Information", .x), "unknown", "not applicable")
+          )
+        )
+      )
+    )
+  ) %>%
+  mutate_all(
+    ~ factor(.x, levels = c(
+      "never", "during", "since",
+      "after", "unknown", "not applicable"
+    ))
+  ) %>%
+  dplyr::select(
+    -changes_other,
+    -changes_other_spec,
+    -changes_res_other,
+    -matches("changes_res_spec")
+  )
+
+#### Changes DOT provision ####
+
+changes_dot <- raw_df %>%
+  dplyr::select(matches("changes_dot")) %>%
+  mutate_all(
+    ~ ifelse(grepl("Only in place", .x), "during",
+      ifelse(grepl("Introduced during", .x), "since",
+        ifelse(grepl("Never", .x), "never",
+          ifelse(grepl("Information", .x), "unknown", "not applicable")
+        )
+      )
+    )
+  ) %>%
+  mutate_all(
+    ~ factor(.x, levels = c(
+      "never", "during", "since",
+      "unknown", "not applicable"
+    ))
+  ) %>%
+  dplyr::select(-changes_dot_other)
+
+
+
+#### Drug shortages ####
+
+short <- raw_df %>%
+  dplyr::select(
+    matches("short_drugs_")
+  ) %>%
+  mutate_all(
+    ~ ifelse(.x == "Yes", "yes", ifelse(.x == "No", "no", "not applicable"))
+  ) %>%
+  mutate_all(
+    ~ factor(.x, levels = c("yes", "no", "not applicable"))
+  )
+
+
+#### Restrictions ####
+
+restr <- raw_df %>%
+  dplyr::select(
+    matches("restr_"),
+    -matches("tb_restr")
+  ) %>%
+  mutate_all(
+    ~ ifelse(.x == "Yes", "yes", ifelse(.x == "No", "no", "not applicable"))
+  ) %>%
+  mutate_all(
+    ~ factor(.x, levels = c("yes", "no", "not applicable"))
+  ) %>%
+  dplyr::select(
+    -restr_tb_other
+  )
+
+#### Restrictions addressed ####
+
+restr_addr <- raw_df %>%
+  dplyr::select(matches("tb_restr_addr")) %>%
+  mutate_all(
+    ~ ifelse(grepl("Only in place", .x), "during",
+      ifelse(grepl("Introduced during", .x), "since",
+        ifelse(grepl("Never", .x), "never",
+          ifelse(grepl("Information", .x), "unknown", "not applicable")
+        )
+      )
+    )
+  ) %>%
+  mutate_all(
+    ~ factor(.x, levels = c(
+      "never", "during", "since",
+      "unknown", "not applicable"
+    ))
+  ) %>%
+  dplyr::select(-tb_restr_addr_other)
 
 
 #### Combine characteristics ####
 
 # combine
-site_descr <- cbind(record_id = 1:nrow(raw_df), site, ipc, short, care)
+site_descr <- cbind(record_id = 1:nrow(raw_df), site, ipc, changes, changes_dot, short, restr, restr_addr)
 
 # save
 saveRDS(site_descr, "data-clean/site-characteristics.rds")

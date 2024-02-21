@@ -82,14 +82,21 @@ char_vars <- c(
   "TB-HIV service integration" = "site_integration"
 )
 
+site_char_sub <- site_char %>%
+  dplyr::select(all_of(unname(char_vars))) %>%
+  mutate(
+    site_region = ifelse(grepl("Africa", site_region), "Africa", "Asia-Pacific"),
+    site_region = factor(site_region, levels = c("Africa", "Asia-Pacific")),
+  )
+
 site_tab <- tibble(variable = character(), value = character())
 
 for (var in char_vars) {
-  if (is.factor(site_char[[var]])) {
-    counts <- as.numeric(table(site_char[[var]]))
+  if (is.factor(site_char_sub[[var]])) {
+    counts <- as.numeric(table(site_char_sub[[var]]))
     perc_counts <- round(counts / sum(counts) * 100)
     val <- paste0(counts, " (", perc_counts, "%)")
-    names_counts <- firstup(names(table(site_char[[var]])))
+    names_counts <- firstup(names(table(site_char_sub[[var]])))
     new_row <- tibble(
       variable = c(
         firstup(names(char_vars)[char_vars == var]),
@@ -97,7 +104,7 @@ for (var in char_vars) {
       ),
       value = c("", val)
     )
-  } else if (is.character(site_char[[var]])) {
+  } else if (is.character(site_char_sub[[var]])) {
     new_row <- tibble(
       variable = c("", firstup(names(char_vars)[char_vars == var])),
       value = c("", "")
@@ -139,7 +146,7 @@ ipc_labs <- c(
 )
 
 ipc_masks <- site_char %>%
-  dplyr::select(record_id, matches("ipc_masks_")) %>%
+  dplyr::select(record_id, matches("_masks"), matches("ffp2")) %>%
   melt("record_id") %>%
   mutate(
     group = ifelse(grepl("staff", variable), "Staff", "Patients"),
@@ -155,55 +162,95 @@ ipc_masks <- site_char %>%
   ) %>%
   rename(variable = group)
 
-ipc_other_names <- c(
-  "ipc_phys_dist" = "Physical distancing",
-  "ipc_triage" = "Patient triage",
-  "ipc_vent" = "Natural ventilation",
-  "ipc_fixed_app" = "Fixed appointments",
-  "ipc_sep_wr" = "Separate waiting rooms",
-  "ipc_open_wr" = "Outside waiting room"
+ipc_msr_staff_names <- c(
+  "msr_staff_masks" = "Face masks",
+  "msr_staff_handsani" = "Hand sanitation",
+  "msr_staff_glasses" = "Safety glasses",
+  "msr_staff_gloves" = "Protective gloves",
+  "msr_staff_clothes" = "Protective clothes"
 )
 
-ipc_other <- site_char %>%
-  dplyr::select(record_id, matches("ipc_"), -matches("masks_")) %>%
+ipc_msr_patient_names <- c(
+  "msr_patients_masks" = "Face masks",
+  "msr_patients_handsani" = "Hand sanitation",
+  "msr_patients_handsoap" = "Hand hygiene"
+)
+
+ipc_msr_pat <- site_char %>%
+  dplyr::select(
+    record_id,
+    matches("msr_patients_"),
+    -matches("_masks"),
+    -matches("ffp2")
+  ) %>%
+  left_join(
+    ipc_masks %>%
+      filter(variable == "Patients: any mask wearing") %>%
+      rename(msr_patients_masks = value) %>%
+      dplyr::select(-variable)
+  ) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!ipc_other_names)
+    variable = recode(variable, !!!ipc_msr_patient_names),
+    variable = factor(variable, levels = rev(ipc_msr_patient_names))
   )
 
-ipc_measrs <- rbind(ipc_masks, ipc_other) %>%
+ipc_msr_staff <- site_char %>%
+  dplyr::select(
+    record_id,
+    matches("msr_staff"),
+    -matches("_masks"),
+    -matches("ffp2")
+  ) %>%
+  left_join(
+    ipc_masks %>%
+      filter(variable == "Staff: any mask wearing") %>%
+      rename(msr_staff_masks = value) %>%
+      dplyr::select(-variable)
+  ) %>%
+  melt("record_id") %>%
   mutate(
-    variable = factor(
-      variable,
-      levels = rev(c(ipc_other_names, ipc_masks_names))
-    )
+    variable = recode(variable, !!!ipc_msr_staff_names),
+    variable = factor(variable, levels = rev(ipc_msr_staff_names))
+  )
+
+ipc_dist_names <- c(
+  "distance_phys" = "Physical distancing",
+  "distance_triage" = "Patient triage",
+  "distance_wr_sep" = "Separate waiting rooms",
+  "distance_wr_open" = "Outside waiting room",
+  "distance_fixed_app" = "Fixed appointments",
+  "distance_comm_area" = "Closure of some common areas",
+  "distance_patients" = "Restr. no. of patients",
+  "distance_visitors" = "Restr. no. of visitors"
+)
+
+ipc_dist <- site_char %>%
+  dplyr::select(record_id, matches("distance_")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!ipc_dist_names),
+    variable = factor(variable, levels = rev(ipc_dist_names))
+  )
+
+ipc_env_names <- c(
+  "envmt_surf_cln" = "Surface cleaning",
+  "envmt_vent" = "Natural ventilation"
+)
+
+ipc_env <- site_char %>%
+  dplyr::select(record_id, matches("envmt_")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!ipc_env_names),
+    variable = factor(variable, levels = rev(ipc_env_names))
   )
 ```
 
-### Shortages
+### Drug shortages
 
 ```{r shortages}
-short_names <- c(
-  "short_changes_staff" = "Staff shortages",
-  "short_changes_hrs" = "Reduced opening hours",
-  "short_restrict_tb_tr" = "Delayed TB treatment",
-  "short_restrict_tb_ct" = "Restricted TB contact tracing",
-  "short_drug" = "Drug shortages (ARVs or anti-TB)"
-)
-
-
-short_labels <- ipc_labels <- c(
-  "since" = "Since pandemic",
-  "after" = "Since pandemic",
-  "during" = "During pandemic",
-  "yes" = "During pandemic",
-  "no" = "No",
-  "never" = "No",
-  "unknown" = "Not known or appl.",
-  "not applicable" = "Not known or appl."
-)
-
-site_char_drug <- site_char %>%
+drug_short <- site_char %>%
   dplyr::select(matches("drugs_")) %>%
   mutate_all(~ ifelse(.x == "yes", 1,
     ifelse(.x == "not applicable", NA, 0)
@@ -213,74 +260,120 @@ site_char_drug <- site_char %>%
     short_drug = ifelse(is.na(short_drug), "not applicable",
       ifelse(short_drug > 0, "yes", "no")
     )
-  )
-
-site_short <- site_char %>%
-  dplyr::select(record_id, matches("short_"), -matches("drugs_")) %>%
-  bind_cols(short_drug = site_char_drug$short_drug) %>%
-  melt("record_id") %>%
-  mutate(
-    variable = recode(variable, !!!short_names),
-    variable = factor(variable, levels = rev(unique(short_names)))
-  )
+  ) %>%
+  mutate(variable = "Drug shortages") %>%
+  rename(value = short_drug) %>%
+  bind_cols(record_id = site_char$record_id) %>%
+  dplyr::select(record_id, variable, value)
 ```
 
-### Care 
+### Care changes
 
 ```{r care}
 care_names <- c(
-  "care_restr_addr_drugs" = "Longer dispensing periods",
-  "care_restr_addr_tele" = "Telehealth services",
-  "care_dot_virt_cl" = "Virtual DOT",
-  "care_restr_addr_diff" = "Differentiated services"
+  "changes_hrs" = "Reduced opening hours",
+  "changes_clos" = "Temporary closure",
+  "changes_staff" = "Staff shortages",
+  "changes_res" = "Equipment shortages",
+  "changes_lab" = "Reduced laboratory services"
 )
 
-care_lab <- c(
-  "since" = "Since pandemic",
-  "during" = "During pandemic",
-  "never" = "No",
-  "unknown" = "Not known or appl.",
-  "not applicable" = "Not known or appl."
-)
-
-care <- site_char %>%
-  dplyr::select(
-    record_id,
-    care_restr_addr_drugs,
-    care_restr_addr_tele,
-    care_dot_virt_cl,
-    care_restr_addr_diff
-  ) %>%
+care_changes <- site_char %>%
+  dplyr::select(all_of(c("record_id", names(care_names)))) %>%
   melt("record_id") %>%
   mutate(
     variable = recode(variable, !!!care_names),
     variable = factor(variable, levels = rev(care_names))
   )
+
+care_dot_names <- c(
+  "changes_dot_comm" = "F2F DOT with community memember",
+  "changes_dot_fam" = "F2F DOT with family member",
+  "changes_dot_virt_cl" = "Virtual DOT with staff member",
+  "changes_dot_virt_comm" = "Virtual DOT with community member"
+)
+
+care_dot_changes <- site_char %>%
+  dplyr::select(record_id, matches("changes_dot")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!care_dot_names),
+    variable = factor(variable, levels = rev(care_dot_names))
+  )
 ```
+
+### Restrictions
+
+```{r restrictions}
+restr_names <- c(
+  "restr_tb_diag" = "Reduced access to diagnostics",
+  "restr_tb_tr" = "Delayed treatment initiation",
+  "restr_tb_tpt" = "Delayed preventive therapy",
+  "restr_tb_ct" = "Restricted contact tracing",
+  "restr_tb_dot" = "Restricted DOT"
+)
+
+restr <- site_char %>%
+  dplyr::select(record_id, matches("restr_"), -matches("tb_restr")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!restr_names),
+    variable = factor(variable, levels = rev(restr_names))
+  )
+
+restr_addr_names <- c(
+  "tb_restr_addr_tele" = "Telehealth services",
+  "tb_restr_addr_diff" = "Differentiated service delivery",
+  "tb_restr_addr_drugs" = "Prolonged drug dispension",
+  "tb_restr_addr_dot" = "Changes in DOT provision"
+)
+
+restr_addr <- site_char %>%
+  dplyr::select(record_id, matches("tb_restr_addr_")) %>%
+  melt("record_id") %>%
+  mutate(
+    variable = recode(variable, !!!restr_addr_names),
+    variable = factor(variable, levels = rev(restr_addr_names))
+  )
+```
+
+### Plot
 
 ```{r plot}
 types <- c(
-  "Have you implemented any IPC measures?",
-  "Have you experienced any staff- or drug-related shortages?",
-  "Have you implemented any changes in care provision?"
+  "Have you implemented distancing and separation measures?",
+  "Have you implemented environmental protective measures?",
+  "Have you implemented personal protective measures for staff?",
+  "Have you implemented personal protective measures for patients?",
+  "Have you observed changes in services during the pandemic?",
+  "Have you observed drug shortages during the pandemic?",
+  "Have you experienced restrictions in TB services during the pandemic?",
+  "How did you address disruptions in TB services?",
+  "How did you change DOT provisions to address disruptions in TB services?"
 )
 
 val_labs <- c(
-  "before" = "Before pandemic",
-  "since" = "Since pandemic",
-  "after" = "Since pandemic",
-  "during" = "During pandemic",
-  "yes" = "During pandemic",
-  "no" = "No",
-  "never" = "No",
-  "unknown" = "Not known or appl.",
-  "not applicable" = "Not known or appl."
+  "before" = "Yes | Already in place before the pandemic",
+  "since" = "Yes | Introduced during pandemic and maintained since then",
+  "after" = "Yes | Introduced during pandemic and maintained since then",
+  "during" = "Yes | Only in place during pandemic",
+  "yes" = "Yes | Only in place during pandemic",
+  "no" = "No | Never in place | Not observed",
+  "never" = "No | Never in place | Not observed",
+  "unknown" = "Information not available",
+  "not applicable" = "Not applicable"
 )
 
 site_surv <- rbind(
-  ipc_measrs %>% mutate(type = types[1]),
-  site_short %>% mutate(type = types[2]),
-  care %>% mutate(type = types[3])
+  ipc_dist %>% mutate(type = types[1]),
+  ipc_env %>% mutate(type = types[2]),
+  ipc_msr_staff %>% mutate(type = types[3]),
+  ipc_msr_pat %>% mutate(type = types[4]),
+  care_changes %>% mutate(type = types[5]),
+  drug_short %>% mutate(type = types[6]),
+  restr %>% mutate(type = types[7]),
+  restr_addr %>% mutate(type = types[8])
+  # care_dot_changes %>% mutate(type = types[9])
 ) %>%
   mutate(
     value = recode(value, !!!val_labs),
@@ -297,6 +390,7 @@ cols <- c(
   # wes_palette("Zissou1")[1],
   wes_palette("Darjeeling2")[4],
   wes_palette("Zissou1")[4],
+  "grey40",
   "grey80"
 )
 
@@ -312,23 +406,118 @@ site_surv_pl <- site_surv %>%
   ) +
   scale_fill_manual(values = rev(cols)) +
   coord_cartesian(expand = FALSE) +
-  theme_custom() +
+  theme_void() +
   theme(
     legend.position = "top",
-    legend.direction = "horizontal",
+    legend.direction = "vertical",
+    legend.justification = "left",
+    legend.key.width = unit(.15, "cm"),
+    legend.key.height = unit(.3, "cm"),
     legend.title = element_blank(),
-    legend.title.align = 0,
-    axis.title = element_blank(),
-    legend.key.width = unit(.19, "cm"),
-    legend.key.height = unit(.3, "cm")
+    axis.text.y = element_text(size = 8, hjust = 1, margin = margin(r = 5)),
+    strip.text = element_text(
+      size = 8,
+      face = 2,
+      margin = margin(b = 5.5),
+      hjust = 0
+    ),
+    panel.spacing = unit(0.5, "cm")
   ) +
-  guides(fill = guide_legend(nrow = 1, reverse = TRUE))
+  guides(fill = guide_legend(ncol = 1, reverse = TRUE))
 
 save_plot(
   site_surv_pl,
   pdf_file = "results/survey.png",
   w = 16,
-  h = 18
+  h = 23
+)
+```
+
+
+### Association IPC and site char
+
+```{r assoc}
+site_char_main <- site_char %>%
+  mutate(
+    site_region = ifelse(
+      grepl("Africa", site_region),
+      "Africa", "Asia-Pacific"
+    ),
+    site_region = factor(site_region, levels = c("Africa", "Asia-Pacific")),
+    site_carelevel = factor(
+      ifelse(site_carelevel == "tertiary", "Tertiary", "Secondary/Primary"),
+      levels = c("Secondary/Primary", "Tertiary")
+    ),
+    site_integration = factor(
+      ifelse(site_integration == "full", "Full", "Partial"),
+      levels = c("Partial", "Full")
+    ),
+    site_setting = factor(
+      ifelse(site_setting == "urban", "Urban", "Peri-urban/rural"),
+      levels = c("Peri-urban/rural", "Urban")
+    )
+  ) %>%
+  dplyr::select(
+    record_id,
+    site_region,
+    site_carelevel,
+    site_integration,
+    site_setting
+  )
+
+main_char_names <- c(
+  "site_region" = "Region",
+  "site_carelevel" = "Level of care",
+  "site_integration" = "TB-HIV service integration",
+  "site_setting" = "Clinic setting"
+)
+
+ipc <- rbind(
+  ipc_dist %>% mutate(type = "Distancing measures"),
+  ipc_env %>% mutate(type = "Environmental measures"),
+  ipc_msr_staff %>% mutate(type = "Staff protective measures"),
+  ipc_msr_pat %>% mutate(type = "Patient protective measures")
+) %>%
+  left_join(site_char_main, by = "record_id") %>%
+  mutate(
+    value = recode(value, !!!val_labs)
+  ) %>%
+  filter(!(value %in% c("Information not available", "Not applicable"))) %>%
+  rename(ipc = variable) %>%
+  melt(c("record_id", "type", "ipc", "value"), value.name = "char") %>%
+  mutate(
+    variable = recode(variable, !!!main_char_names),
+    value = factor(value, levels = rev(rev(unique(val_labs))[-c(1:2)]))
+  ) %>%
+  group_by(record_id, variable, char, value) %>%
+  summarize(n_ipc = n()) %>%
+  ungroup() %>%
+  group_by(variable, char, value) %>%
+  summarise(mean_n_ipc = mean(n_ipc)) %>%
+  ungroup()
+
+ipc_assoc_pl <- ipc %>%
+  ggplot(aes(x = char, fill = value, y = mean_n_ipc)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  facet_wrap(~variable, scales = "free_x") +
+  scale_fill_manual(values = cols[-c(5:6)]) +
+  scale_y_continuous(expand = c(0, 0)) +
+  labs(y = "Mean number of implemented IPC measures") +
+  theme_custom() +
+  theme(
+    legend.position = "top",
+    legend.direction = "vertical",
+    legend.justification = "left",
+    legend.key.width = unit(.15, "cm"),
+    legend.key.height = unit(.3, "cm"),
+    legend.title = element_blank()
+  )
+
+save_plot(
+  ipc_assoc_pl,
+  pdf_file = "results/ipc-association.png",
+  w = 16,
+  h = 12
 )
 ```
 
@@ -838,27 +1027,27 @@ pred_df <- bind_rows(
   pred_new %>%
     mutate(outcome = "Newly diagnosed TB cases") %>%
     mutate(subgroup = site_region),
-  pred_new %>%
-    mutate(outcome = "Newly diagnosed TB cases") %>%
-    mutate(subgroup = site_integration),
+  # pred_new %>%
+  #   mutate(outcome = "Newly diagnosed TB cases") %>%
+  #   mutate(subgroup = site_integration),
   pred_art %>%
     mutate(outcome = "New patients on ART") %>%
     mutate(subgroup = "Global"),
   pred_art %>%
     mutate(outcome = "New patients on ART") %>%
     mutate(subgroup = site_region),
-  pred_art %>%
-    mutate(outcome = "New patients on ART") %>%
-    mutate(subgroup = site_integration),
+  # pred_art %>%
+  #   mutate(outcome = "New patients on ART") %>%
+  #   mutate(subgroup = site_integration),
   pred_genex %>%
     mutate(outcome = "Number of GeneXpert done") %>%
     mutate(subgroup = "Global"),
   pred_genex %>%
     mutate(outcome = "Number of GeneXpert done") %>%
     mutate(subgroup = site_region),
-  pred_genex %>%
-    mutate(outcome = "Number of GeneXpert done") %>%
-    mutate(subgroup = site_integration)
+  # pred_genex %>%
+  #   mutate(outcome = "Number of GeneXpert done") %>%
+  #   mutate(subgroup = site_integration)
 )
 
 outcome_lab <- c(
@@ -870,9 +1059,9 @@ outcome_lab <- c(
 subgroup_lab <- c(
   "Global" = "Global",
   "Africa" = "Africa",
-  "Asia-Pacific" = "Asia Pacific",
-  "Fully integrated" = "TB-HIV fully integrated",
-  "Not integrated" = "TB-HIV partially integrated"
+  "Asia-Pacific" = "Asia Pacific"
+  # "Fully integrated" = "TB-HIV fully integrated",
+  # "Not integrated" = "TB-HIV partially integrated"
 )
 
 est_cases <- pred_df %>%
@@ -882,13 +1071,14 @@ est_cases <- pred_df %>%
   group_by(year_quart, outcome, subgroup) %>%
   median_qi() %>%
   ungroup() %>%
-  mutate(
-    forecast = ifelse(year_quart > 2023.25, "Forecast", "Observed"),
-    forecast = factor(forecast, levels = c("Forecast", "Observed"))
-  ) %>%
-  group_by(outcome, subgroup) %>%
-  mutate(type = data.table::rleid(forecast)) %>%
-  ungroup() %>%
+  filter(year_quart <= 2023) %>%
+  # mutate(
+  #   forecast = ifelse(year_quart > 2023.25, "Forecast", "Observed"),
+  #   forecast = factor(forecast, levels = c("Forecast", "Observed"))
+  # ) %>%
+  # group_by(outcome, subgroup) %>%
+  # mutate(type = data.table::rleid(forecast)) %>%
+  # ungroup() %>%
   mutate(
     outcome = recode(outcome, !!!outcome_lab),
     subgroup = recode(subgroup, !!!subgroup_lab),
@@ -896,21 +1086,21 @@ est_cases <- pred_df %>%
     subgroup = factor(subgroup, levels = subgroup_lab)
   )
 
-est_cases <- rbind(
-  est_cases,
-  est_cases[est_cases$year_quart == 2023.25, ] %>%
-    mutate(type = 2, forecast = "Forecast")
-)
+# est_cases <- rbind(
+#   est_cases,
+#   est_cases[est_cases$year_quart == 2023.25, ] %>%
+#     mutate(type = 2, forecast = "Forecast")
+# )
 
 pl <- ggplot(
   data = est_cases,
-  mapping = aes(x = year_quart - .25)
+  mapping = aes(x = year_quart) #  - .25
 ) +
-  geom_line(aes(y = pred, color = forecast, group = type)) +
+  geom_line(aes(y = pred)) + # , color = forecast, group = type
   geom_ribbon(
     aes(
-      ymin = .lower, ymax = .upper,
-      fill = forecast, group = type
+      ymin = .lower, ymax = .upper
+      # fill = forecast, group = type
     ),
     alpha = .25
   ) +
@@ -924,7 +1114,7 @@ pl <- ggplot(
   scale_fill_manual(values = c("darkred", "black")) +
   scale_x_continuous(
     expand = expansion(mult = c(0, 0)),
-    breaks = seq(2018, 2024, 2)
+    breaks = seq(2018, 2023, 1) # seq(2018, 2024, 2)
   ) +
   scale_y_continuous(
     expand = c(0, 0),
@@ -944,6 +1134,6 @@ pl <- ggplot(
 save_plot(
   pl,
   pdf_file = "results/imputed-outcomes.png",
-  w = 16, h = 22
+  w = 16, h = 14
 )
 ```
