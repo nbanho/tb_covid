@@ -650,6 +650,60 @@ cor_by_group("site_carelevel")
 cor_by_group("site_owner")
 ```
 
+### Granger causality
+
+```{r granger}
+library(plm)
+library(car)
+cases_art <- pdata.frame(
+  qtr_df %>%
+    group_by(record_id) %>%
+    filter(all(!is.na(new)) & all(!is.na(art))) %>%
+    arrange(year_quart) %>%
+    mutate(time = 1:n()) %>%
+    mutate(
+      new = log1p(new),
+      art = log1p(art)
+    ) %>%
+    ungroup() %>%
+    dplyr::select(record_id, time, year, quarter, new, art),
+  index = c("record_id", "time")
+)
+
+n_distinct(cases_art$record_id)
+
+pgrangertest(new ~ art, data = cases_art, order = 4L)
+pgrangertest(art ~ new, data = cases_art, order = 4L)
+
+pgrangertest(new ~ art, data = cases_art, order = 2L)
+pgrangertest(art ~ new, data = cases_art, order = 2L)
+
+plm_lag_art <- plm(
+  new ~ lag(new, 1:4) + lag(art, 1:4) + factor(quarter) + factor(year),
+  data = cases_art,
+  model = "fd"
+)
+
+summary(plm_lag_art)
+
+xnames <- names(coef(plm_lag_art))
+xnames <- xnames[grepl("art,", xnames)]
+linearHypothesis(plm_lag_art, xnames)
+
+plm_lag_new <- plm(
+  art ~ lag(new, 1:4) + lag(art, 1:4) + factor(quarter) + factor(year),
+  data = cases_art,
+  model = "fd"
+)
+
+summary(plm_lag_new)
+
+xnames2 <- names(coef(plm_lag_new))
+xnames2 <- xnames2[grepl("new,", xnames2)]
+linearHypothesis(plm_lag_new, xnames2)
+```
+
+
 ## Imputation
 
 ### Prepare data
