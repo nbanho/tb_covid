@@ -233,7 +233,24 @@ restr_addr <- raw_df %>%
 #### Combine characteristics ####
 
 # combine
-site_descr <- cbind(record_id = 1:nrow(raw_df), site, ipc, changes, changes_dot, short, restr, restr_addr)
+site_descr <- cbind(
+  record_id = 1:nrow(raw_df),
+  site, ipc, changes,
+  changes_dot, short,
+  restr, restr_addr
+) %>%
+  mutate(
+    across(
+      matches("restr_tb_"),
+      ~ ifelse(site_integration == "not integrated",
+        "not applicable", as.character(.x)
+      )
+    ),
+    across(
+      matches("restr_tb_"),
+      ~ factor(.x, levels = c("yes", "no", "not applicable"))
+    )
+  )
 
 # save
 saveRDS(site_descr, "data-clean/site-characteristics.rds")

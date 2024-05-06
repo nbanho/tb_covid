@@ -128,6 +128,63 @@ write.table(
 )
 ```
 
+```{r site}
+char_vars_strat <- char_vars[-1]
+
+site_tab_strat <- tibble(
+  Variable = character(),
+  Africa = character(),
+  `Asia-Pacific` = character()
+)
+
+for (var in char_vars_strat) {
+  if (is.factor(site_char_sub[[var]])) {
+    counts <- matrix(table(
+      site_char_sub[[var]],
+      site_char_sub$site_region
+    ), ncol = 2)
+    perc_counts <- cbind(
+      round(counts[, 1] / sum(counts[, 1]) * 100),
+      round(counts[, 2] / sum(counts[, 2]) * 100)
+    )
+    val <- matrix(paste0(counts, " (", perc_counts, "%)"), ncol = 2)
+    names_counts <- firstup(names(table(site_char_sub[[var]])))
+    new_row <- tibble(
+      Variable = c(
+        firstup(names(char_vars)[char_vars == var]),
+        paste0("   ", names_counts)
+      ),
+      Africa = c("", val[, 1]),
+      `Asia-Pacific` = c("", val[, 2])
+    )
+  } else if (is.character(site_char_sub[[var]])) {
+    new_row <- tibble(
+      Variable = c("", firstup(names(char_vars)[char_vars == var])),
+      value = c("", "")
+    )
+  } else {
+    stop(sprintf("Incorrect variable type for %s", var))
+  }
+  site_tab_strat <- rbind(site_tab_strat, new_row)
+}
+
+site_tab_strat <- rbind(
+  c(
+    "variable" = "Variable",
+    "Africa" = paste0("N=", nrow(site_char_sub[site_char_sub$site_region == "Africa", ])),
+    "Asia-Pacific" = paste0("N=", nrow(site_char_sub[site_char_sub$site_region == "Asia-Pacific", ]))
+  ),
+  site_tab_strat
+)
+
+write.table(
+  data.frame(site_tab_strat),
+  file = "results/table-site-characteristics-by-region.txt",
+  row.names = FALSE,
+  sep = ",", quote = FALSE
+)
+```
+
 ### IPC measures
 
 ```{r ipc}
@@ -192,7 +249,7 @@ ipc_msr_pat <- site_char %>%
   melt("record_id") %>%
   mutate(
     variable = recode(variable, !!!ipc_msr_patient_names),
-    variable = factor(variable, levels = rev(ipc_msr_patient_names))
+    variable = factor(variable, levels = ipc_msr_patient_names)
   )
 
 ipc_msr_staff <- site_char %>%
@@ -221,8 +278,8 @@ ipc_dist_names <- c(
   "distance_wr_open" = "Outside waiting room",
   "distance_fixed_app" = "Fixed appointments",
   "distance_comm_area" = "Closure of some common areas",
-  "distance_patients" = "Restr. no. of patients",
-  "distance_visitors" = "Restr. no. of visitors"
+  "distance_patients" = "Restricted number of patients",
+  "distance_visitors" = "Restricted number of visitors"
 )
 
 ipc_dist <- site_char %>%
@@ -310,7 +367,7 @@ restr_names <- c(
   "restr_tb_tr" = "Delayed treatment initiation",
   "restr_tb_tpt" = "Delayed preventive therapy",
   "restr_tb_ct" = "Restricted contact tracing",
-  "restr_tb_dot" = "Restricted DOT"
+  "restr_tb_dot" = "Restricted directly observed therapy"
 )
 
 restr <- site_char %>%
@@ -325,7 +382,7 @@ restr_addr_names <- c(
   "tb_restr_addr_tele" = "Telehealth services",
   "tb_restr_addr_diff" = "Differentiated service delivery",
   "tb_restr_addr_drugs" = "Prolonged drug dispension",
-  "tb_restr_addr_dot" = "Changes in DOT provision"
+  "tb_restr_addr_dot" = "Changes in directly observed therapy provision"
 )
 
 restr_addr <- site_char %>%
@@ -337,19 +394,193 @@ restr_addr <- site_char %>%
   )
 ```
 
+### Summaries 
+
+```{r summaries}
+ipc_dist %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "during")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_dist %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "before")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_dist %>%
+  group_by(record_id) %>%
+  summarize(a = !any(value == "since" | value == "during" | value == "before")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_dist %>%
+  group_by(variable) %>%
+  summarize(
+    n = sum(value == "since"),
+    p = round(100 * n / n_distinct(ipc_dist$record_id))
+  ) %>%
+  ungroup()
+
+ipc_env %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "during")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_env %>%
+  group_by(record_id) %>%
+  summarize(a = all(value == "before")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_msr_staff %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "during")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_msr_staff %>%
+  filter(variable == "Face masks" | variable == "Hand sanitation") %>%
+  group_by(variable) %>%
+  summarize(
+    n = sum(value == "since" | value == "during"),
+    p = round(100 * n / n_distinct(ipc_msr_staff$record_id))
+  ) %>%
+  ungroup()
+
+ipc_msr_pat %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "during")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+ipc_msr_pat %>%
+  filter(variable == "Face masks" | variable == "Hand sanitation") %>%
+  group_by(variable) %>%
+  summarize(
+    n = sum(value == "since" | value == "during"),
+    p = round(100 * n / n_distinct(ipc_msr_staff$record_id))
+  ) %>%
+  ungroup()
+
+rbind(
+  ipc_dist, ipc_env, ipc_msr_staff, ipc_msr_pat
+) %>%
+  group_by(record_id) %>%
+  summarize(n = sum(value == "since")) %>%
+  ungroup() %>%
+  summarize(
+    mean = mean(n)
+  )
+
+rbind(
+  ipc_dist, ipc_env, ipc_msr_staff, ipc_msr_pat
+) %>%
+  group_by(record_id) %>%
+  summarize(n = sum(value == "before")) %>%
+  ungroup() %>%
+  summarize(
+    mean = mean(n)
+  )
+
+rbind(
+  ipc_dist, ipc_env, ipc_msr_staff, ipc_msr_pat
+) %>%
+  summarise(n_distinct(variable))
+
+care_changes %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "during")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+care_changes %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "since" | value == "after")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+restr %>%
+  group_by(record_id) %>%
+  summarize(a = any(value == "yes")) %>%
+  ungroup() %>%
+  summarize(
+    n = n(),
+    n_since = sum(a),
+    p = n_since / n
+  )
+
+restr_addr %>%
+  mutate(value = ifelse(value == "since", "during", value)) %>%
+  group_by(variable, value) %>%
+  summarize(
+    n = n(),
+    p = round(100 * n() / n_distinct(restr_addr$record_id))
+  ) %>%
+  ungroup() %>%
+  arrange(value)
+
+restr_addr %>%
+  group_by(variable, value) %>%
+  summarize(
+    n = n(),
+    p = round(100 * n() / n_distinct(restr_addr$record_id))
+  ) %>%
+  ungroup() %>%
+  arrange(value)
+```
+
 ### Plot
 
 ```{r plot}
 types <- c(
-  "Have you implemented distancing and separation measures?",
-  "Have you implemented environmental protective measures?",
-  "Have you implemented personal protective measures for staff?",
-  "Have you implemented personal protective measures for patients?",
-  "Have you observed changes in services during the pandemic?",
-  "Have you observed drug shortages during the pandemic?",
-  "Have you experienced restrictions in TB services during the pandemic?",
-  "How did you address disruptions in TB services?",
-  "How did you change DOT provisions to address disruptions in TB services?"
+  "A | Have you implemented distancing and separation measures?",
+  "B | Have you implemented environmental protective measures?",
+  "C | Have you implemented personal protective measures for staff?",
+  "D | Have you implemented personal protective measures for patients?",
+  "E | Have you observed changes in services during the pandemic?",
+  "F | Have you observed drug shortages during the pandemic?",
+  "G | Have you experienced restrictions in TB services during the pandemic?",
+  "H | How did you address disruptions in TB services?",
+  "I | How did you change DOT provisions to address disruptions in TB services?"
 )
 
 val_labs <- c(
@@ -378,7 +609,13 @@ site_surv <- rbind(
   mutate(
     value = recode(value, !!!val_labs),
     value = factor(value, levels = rev(unique(val_labs))),
-    type = factor(type, levels = types)
+    type = factor(type, levels = types),
+    variable = factor(variable, levels = c(
+      rev(ipc_dist_names), rev(ipc_env_names),
+      "Hand hygiene", rev(ipc_msr_staff_names),
+      rev(care_names), "Drug shortages",
+      rev(restr_names), rev(restr_addr_names)
+    ))
   ) %>%
   group_by(type, variable, value) %>%
   summarize(n = n()) %>%
@@ -396,7 +633,7 @@ cols <- c(
 
 site_surv_pl <- site_surv %>%
   ggplot(aes(y = variable, x = n, fill = value)) +
-  ggforce::facet_col(type ~ ., scales = "free", space = "free") +
+  ggforce::facet_col(type ~ ., scales = "free_y", space = "free") +
   geom_bar(stat = "identity", position = "stack") +
   geom_text(
     aes(label = n),
@@ -404,16 +641,18 @@ site_surv_pl <- site_surv %>%
     size = 8 / cm(1),
     color = "white"
   ) +
+  labs(x = "Number of sites") +
   scale_fill_manual(values = rev(cols)) +
   coord_cartesian(expand = FALSE) +
   theme_void() +
   theme(
-    legend.position = "top",
+    legend.position = "bottom",
     legend.direction = "vertical",
     legend.justification = "left",
     legend.key.width = unit(.15, "cm"),
     legend.key.height = unit(.3, "cm"),
     legend.title = element_blank(),
+    axis.title.x = element_text(size = 8, margin = margin(t = 5.5)),
     axis.text.y = element_text(size = 8, hjust = 1, margin = margin(r = 5)),
     strip.text = element_text(
       size = 8,
@@ -423,7 +662,7 @@ site_surv_pl <- site_surv %>%
     ),
     panel.spacing = unit(0.5, "cm")
   ) +
-  guides(fill = guide_legend(ncol = 1, reverse = TRUE))
+  guides(fill = guide_legend(ncol = 1, reverse = TRUE, byrow = TRUE))
 
 save_plot(
   site_surv_pl,
@@ -452,9 +691,9 @@ site_char_main <- site_char %>%
       ifelse(site_integration == "full", "Full", "Partial"),
       levels = c("Partial", "Full")
     ),
-    site_setting = factor(
-      ifelse(site_setting == "urban", "Urban", "Peri-urban/rural"),
-      levels = c("Peri-urban/rural", "Urban")
+    site_treated = factor(
+      ifelse(site_treated == "only adults", "Adults only", "Adults & children"),
+      levels = c("Adults only", "Adults & children")
     )
   ) %>%
   dplyr::select(
@@ -462,14 +701,14 @@ site_char_main <- site_char %>%
     site_region,
     site_carelevel,
     site_integration,
-    site_setting
+    site_treated
   )
 
 main_char_names <- c(
   "site_region" = "Region",
   "site_carelevel" = "Level of care",
   "site_integration" = "TB-HIV service integration",
-  "site_setting" = "Clinic setting"
+  "site_treated" = "Age of treated patients"
 )
 
 ipc <- rbind(
@@ -488,36 +727,112 @@ ipc <- rbind(
   mutate(
     variable = recode(variable, !!!main_char_names),
     value = factor(value, levels = rev(rev(unique(val_labs))[-c(1:2)]))
-  ) %>%
+  )
+
+ipc %>%
+  filter(variable == "Region") %>%
+  group_by(record_id, value) %>%
+  summarize(n_ipc = n()) %>%
+  ungroup() %>%
+  group_by(value) %>%
+  summarise(sum_n_ipc = sum(n_ipc)) %>%
+  ungroup() %>%
+  mutate(p_ipc = round(100 * sum_n_ipc / sum(sum_n_ipc)))
+
+ipc_sum <- ipc %>%
   group_by(record_id, variable, char, value) %>%
   summarize(n_ipc = n()) %>%
   ungroup() %>%
   group_by(variable, char, value) %>%
-  summarise(mean_n_ipc = mean(n_ipc)) %>%
-  ungroup()
-
-ipc_assoc_pl <- ipc %>%
-  ggplot(aes(x = char, fill = value, y = mean_n_ipc)) +
-  geom_bar(stat = "identity", position = "dodge") +
-  facet_wrap(~variable, scales = "free_x") +
-  scale_fill_manual(values = cols[-c(5:6)]) +
-  scale_y_continuous(expand = c(0, 0)) +
-  labs(y = "Mean number of implemented IPC measures") +
-  theme_custom() +
-  theme(
-    legend.position = "top",
-    legend.direction = "vertical",
-    legend.justification = "left",
-    legend.key.width = unit(.15, "cm"),
-    legend.key.height = unit(.3, "cm"),
-    legend.title = element_blank()
+  summarise(sum_n_ipc = sum(n_ipc)) %>%
+  ungroup() %>%
+  group_by(variable, char) %>%
+  mutate(p_ipc = sum_n_ipc / sum(sum_n_ipc)) %>%
+  ungroup() %>%
+  group_by(variable, char) %>%
+  complete(
+    value,
+    fill = list(sum_n_ipc = 0, p_ipc = 0)
   )
+
+ipc_pval <- tibble(variable = character(), pval = double())
+for (v in unique(ipc$variable)) {
+  ipc_sub <- ipc %>%
+    filter(variable == v)
+  cont_tbl <- table(ipc_sub$value, ipc_sub$char)
+  test <- chisq.test(cont_tbl)$p.value
+  ipc_pval <- rbind(ipc_pval, tibble(variable = v, pval = test))
+}
+
+ipc_pval$pval_txt <- ifelse(ipc_pval$pval < 0.001, "p<0.001",
+  ifelse(ipc_pval$pval < 0.01, paste0("p=", round(ipc_pval$pval, 3)),
+    paste0("p=", round(ipc_pval$pval, 2))
+  )
+)
+
+ipc_sum_list <- ipc_sum %>%
+  split(.$variable)
+
+ipc_assoc_pl_list <- lapply(ipc_sum_list, function(dat) {
+  dat %>%
+    ggplot(aes(x = char, fill = value, group = value, y = p_ipc)) +
+    geom_col(
+      width = .8,
+      position = position_dodge2(width = .8, preserve = "single")
+    ) +
+    geom_text(
+      aes(label = paste0(round(100 * p_ipc), "%")),
+      position = position_dodge2(width = .8, preserve = "single"),
+      vjust = -.5,
+      size = 7 / cm(1),
+      color = "black",
+      inherit.aes = TRUE
+    ) +
+    ggsignif::geom_signif(
+      y_position = .55,
+      xmin = 1,
+      xmax = 2,
+      annotation = ipc_pval$pval_txt[ipc_pval$variable == dat$variable[1]],
+      tip_length = 0.03,
+      step_increase = 0.2,
+      textsize = 8 / cm(1),
+      vjust = -.5
+    ) +
+    scale_fill_manual(values = cols[-c(5:6)]) +
+    scale_y_continuous(
+      limits = c(0, 0.55),
+      breaks = seq(0, 0.55, 0.1),
+      expand = expansion(mult = c(0, 0.1)),
+      labels = function(x) x * 100
+    ) +
+    labs(
+      title = dat$variable[1],
+      y = "Total proportion of IPC measures (%)"
+    ) +
+    theme_custom() +
+    theme(
+      legend.position = "bottom",
+      legend.direction = "vertical",
+      legend.justification = "left",
+      legend.key.width = unit(.15, "cm"),
+      legend.key.height = unit(.3, "cm"),
+      legend.title = element_blank(),
+      axis.title.x = element_blank(),
+      plot.title.position = "plot",
+      plot.title = element_text(hjust = 0.5)
+    )
+})
+
+ipc_assoc_pl <- ipc_assoc_pl_list[[1]] + ipc_assoc_pl_list[[2]] + ipc_assoc_pl_list[[3]] + ipc_assoc_pl_list[[4]] + plot_layout(guides = "collect", ncol = 2, axis_titles = "collect")
+
+# Add the legend
+ipc_assoc_pl <- ipc_assoc_pl & theme(legend.position = "bottom")
 
 save_plot(
   ipc_assoc_pl,
   pdf_file = "results/ipc-association.png",
   w = 16,
-  h = 12
+  h = 14
 )
 ```
 
@@ -655,6 +970,7 @@ cor_by_group("site_owner")
 ```{r granger}
 library(plm)
 library(car)
+
 cases_art <- pdata.frame(
   qtr_df %>%
     group_by(record_id) %>%
@@ -663,7 +979,8 @@ cases_art <- pdata.frame(
     mutate(time = 1:n()) %>%
     mutate(
       new = log1p(new),
-      art = log1p(art)
+      art = log1p(art),
+      genex = log1p(genex),
     ) %>%
     ungroup() %>%
     dplyr::select(record_id, time, year, quarter, new, art),
@@ -701,6 +1018,15 @@ summary(plm_lag_new)
 xnames2 <- names(coef(plm_lag_new))
 xnames2 <- xnames2[grepl("new,", xnames2)]
 linearHypothesis(plm_lag_new, xnames2)
+
+
+plm_cor <- plm(
+  new ~ genex + factor(quarter) + factor(year),
+  data = cases_art,
+  model = "fd"
+)
+
+summary(plm_cor)
 ```
 
 
@@ -1023,17 +1349,19 @@ pred_art <- get_estimates(df_art$dat, df_art$stan_dat, m_art)
 # plot model fit
 ggplot(mapping = aes(x = year_quart)) +
   stat_lineribbon(
-    data = pred_art,
+    data = pred_art %>% filter(year_quart <= 2023),
     mapping = aes(y = pred),
     .width = c(.5, .95)
   ) +
   geom_line(
-    data = pred_art %>% group_by(record_id, year_quart) %>% slice(1),
+    data = pred_art %>% group_by(record_id, year_quart) %>% slice(1) %>% filter(year_quart <= 2023),
     mapping = aes(y = y),
     color = "red"
   ) +
   facet_wrap(~record_id, scales = "free_y") +
   scale_fill_brewer()
+
+ggsave("results/art-by-site.png", width = 16, height = 12)
 ```
 
 #### Genex
@@ -1105,9 +1433,9 @@ pred_df <- bind_rows(
 )
 
 outcome_lab <- c(
-  "Newly diagnosed TB cases" = "New TB cases",
-  "New patients on ART" = "New patients on ART",
-  "Number of GeneXpert done" = "Number of GeneXpert done"
+  "Newly diagnosed TB cases" = "Number of people newly\ndiagnosed with TB",
+  "Number of GeneXpert done" = "Number of Xpert tests\nperformed",
+  "New patients on ART" = "Number of people newly\nstarted on ART"
 )
 
 subgroup_lab <- c(
@@ -1134,8 +1462,8 @@ est_cases <- pred_df %>%
   # mutate(type = data.table::rleid(forecast)) %>%
   # ungroup() %>%
   mutate(
-    outcome = recode(outcome, !!!outcome_lab),
-    subgroup = recode(subgroup, !!!subgroup_lab),
+    outcome = dplyr::recode(outcome, !!!outcome_lab),
+    subgroup = dplyr::recode(subgroup, !!!subgroup_lab),
     outcome = factor(outcome, levels = outcome_lab),
     subgroup = factor(subgroup, levels = subgroup_lab)
   )
@@ -1168,7 +1496,9 @@ pl <- ggplot(
   scale_fill_manual(values = c("darkred", "black")) +
   scale_x_continuous(
     expand = expansion(mult = c(0, 0)),
-    breaks = seq(2018, 2023, 1) # seq(2018, 2024, 2)
+    limits = c(2018.25, 2023.25),
+    breaks = seq(2018.25, 2023.25, 1),
+    labels = function(x) x - 0.25
   ) +
   scale_y_continuous(
     expand = c(0, 0),
@@ -1183,6 +1513,7 @@ pl <- ggplot(
     axis.title = element_blank(),
     panel.spacing = unit(.5, "cm"),
     strip.text = element_text(size = 8, face = 2, margin = margin(b = 5.5)),
+    plot.margin = margin(r = 10),
   )
 
 save_plot(
