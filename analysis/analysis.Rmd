@@ -1074,7 +1074,7 @@ prep_data <- function(outcome, exclude_ids = NULL) {
         .names = "{.col}_ind"
       ),
       year_ind = year - min(year) + 1,
-      record_id = as.integer(factor(record_id))
+      record_id_int = as.integer(factor(record_id))
     )
 
 
@@ -1093,21 +1093,21 @@ prep_data <- function(outcome, exclude_ids = NULL) {
   sdf$time_ind <- qadf$time_ind
   sdf$year_ind <- qadf$year_ind
   sdf$quarter_ind <- qadf$quarter
-  sdf$site_ind <- qadf$record_id
+  sdf$site_ind <- qadf$record_id_int
   sdf$region_ind <- qadf$site_region_ind
   sdf$country_ind <- qadf$site_country_ind
   sdf$site_region_ind <- qadf %>%
-    group_by(record_id) %>%
+    group_by(record_id_int) %>%
     slice(1) %>%
     ungroup() %>%
-    arrange(record_id) %>%
+    arrange(record_id_int) %>%
     dplyr::select(site_region_ind) %>%
     unlist()
   sdf$site_country_ind <- qadf %>%
-    group_by(record_id) %>%
+    group_by(record_id_int) %>%
     slice(1) %>%
     ungroup() %>%
-    arrange(record_id) %>%
+    arrange(record_id_int) %>%
     dplyr::select(site_country_ind) %>%
     unlist()
 
@@ -1179,6 +1179,7 @@ get_estimates <- function(dat, stan_dat, mod) {
     dplyr::select(
       "ind",
       "record_id",
+      "record_id_int",
       "year",
       "year_quart",
       "site_region",
@@ -1190,21 +1191,27 @@ get_estimates <- function(dat, stan_dat, mod) {
 
   # empty forecast data
   df_fcat <- expand.grid(
-    record_id = sort(unique(stan_dat$site_ind)),
+    record_id_int = sort(unique(stan_dat$site_ind)),
     year_quart = max(df_obs$year) + 1 + c(.25, .50, .75, 1)
   ) %>%
-    arrange(record_id) %>%
+    arrange(record_id_int) %>%
     mutate(
       year = floor(year_quart),
       ind = max(df_obs$ind) + 1:n()
+    ) %>%
+    left_join(
+      df_obs %>%
+        dplyr::select(record_id, record_id_int) %>%
+        distinct(),
+      by = "record_id_int"
     )
 
   # combine
   df_obs <- rbind(
-    dplyr::select(df_obs, record_id, year, year_quart, ind),
+    dplyr::select(df_obs, record_id, record_id_int, year, year_quart, ind),
     df_fcat
   ) %>%
-    left_join(df_obs, by = c("ind", "record_id", "year", "year_quart")) %>%
+    left_join(df_obs, by = c("ind", "record_id", "record_id_int", "year", "year_quart")) %>%
     group_by(record_id) %>%
     fill(
       site_region, site_country,
@@ -1432,18 +1439,10 @@ pred_df <- bind_rows(
   #   mutate(subgroup = site_integration)
 )
 
-outcome_lab <- c(
-  "Newly diagnosed TB cases" = "Number of people newly\ndiagnosed with TB",
-  "Number of GeneXpert done" = "Number of Xpert tests\nperformed",
-  "New patients on ART" = "Number of people newly\nstarted on ART"
-)
-
 subgroup_lab <- c(
   "Global" = "Global",
   "Africa" = "Africa",
   "Asia-Pacific" = "Asia Pacific"
-  # "Fully integrated" = "TB-HIV fully integrated",
-  # "Not integrated" = "TB-HIV partially integrated"
 )
 
 est_cases <- pred_df %>%
@@ -1520,5 +1519,121 @@ save_plot(
   pl,
   pdf_file = "results/imputed-outcomes.png",
   w = 16, h = 14
+)
+```
+
+#### TPT
+
+```{r tpt-model}
+df_tpt <- prep_data("tpt", exclude_ids = 45)
+
+m_tpt <- stan(
+  file = model_file,
+  chains = chains,
+  iter = iterations,
+  cores = nc,
+  seed = seed,
+  data = df_tpt$stan_dat
+)
+```
+
+```{r tpt-fit}
+# get estimates/predictions
+pred_tpt <- get_estimates(df_tpt$dat, df_tpt$stan_dat, m_tpt)
+
+# plot model fit
+ggplot(mapping = aes(x = year_quart)) +
+  stat_lineribbon(
+    data = pred_tpt %>% filter(year_quart <= 2023),
+    mapping = aes(y = pred),
+    .width = c(.5, .95)
+  ) +
+  geom_line(
+    data = pred_tpt %>%
+      group_by(record_id, year_quart) %>%
+      slice(1) %>%
+      filter(year_quart <= 2023),
+    mapping = aes(y = y),
+    color = "red"
+  ) +
+  facet_wrap(~record_id, scales = "free_y") +
+  scale_fill_brewer()
+
+ggsave("results/tpt-by-site.png", width = 16, height = 12)
+```
+
+```{r tpt-plot}
+pred_tpt_df <- bind_rows(
+  pred_tpt %>%
+    mutate(subgroup = "Global"),
+  pred_tpt %>%
+    mutate(subgroup = site_region)
+)
+
+subgroup_lab <- c(
+  "Global" = "Global",
+  "Africa" = "Africa",
+  "Asia-Pacific" = "Asia Pacific"
+)
+
+est_cases_tpt <- pred_tpt_df %>%
+  group_by(.draw, year_quart, subgroup) %>%
+  summarize(pred = sum(pred)) %>%
+  ungroup() %>%
+  group_by(year_quart, subgroup) %>%
+  median_qi() %>%
+  ungroup() %>%
+  filter(year_quart <= 2023) %>%
+  mutate(
+    subgroup = dplyr::recode(subgroup, !!!subgroup_lab),
+    subgroup = factor(subgroup, levels = subgroup_lab)
+  )
+
+tpt_pl <- ggplot(
+  data = est_cases_tpt,
+  mapping = aes(x = year_quart) #  - .25
+) +
+  geom_line(aes(y = pred)) +
+  geom_ribbon(
+    aes(
+      ymin = .lower, ymax = .upper
+    ),
+    alpha = .25
+  ) +
+  facet_wrap(
+    ~subgroup,
+    dir = "h",
+    ncol = 3,
+    scales = "free"
+  ) +
+  scale_color_manual(values = c("darkred", "black")) +
+  scale_fill_manual(values = c("darkred", "black")) +
+  scale_x_continuous(
+    expand = expansion(mult = c(0, 0)),
+    limits = c(2018.25, 2023.25),
+    breaks = seq(2018.25, 2023.25, 1),
+    labels = function(x) x - 0.25
+  ) +
+  scale_y_continuous(
+    expand = c(0, 0),
+    labels = scales::comma
+  ) +
+  labs(
+    fill = "CrI",
+    y = "Number of TPT initiations"
+  ) +
+  theme_custom() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    panel.spacing = unit(.25, "cm"),
+    strip.text = element_text(size = 8, face = 2, margin = margin(b = 5.5)),
+    plot.margin = margin(r = 10),
+  )
+
+save_plot(
+  tpt_pl,
+  pdf_file = "results/tpt-imputed.png",
+  w = 16, h = 5
 )
 ```
