@@ -215,7 +215,7 @@ ipc_masks <- site_char %>%
   ) %>%
   ungroup() %>%
   mutate(
-    group = recode(group, !!!ipc_masks_names)
+    group = dplyr::recode(group, !!!ipc_masks_names)
   ) %>%
   rename(variable = group)
 
@@ -248,7 +248,7 @@ ipc_msr_pat <- site_char %>%
   ) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!ipc_msr_patient_names),
+    variable = dplyr::recode(variable, !!!ipc_msr_patient_names),
     variable = factor(variable, levels = ipc_msr_patient_names)
   )
 
@@ -267,7 +267,7 @@ ipc_msr_staff <- site_char %>%
   ) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!ipc_msr_staff_names),
+    variable = dplyr::recode(variable, !!!ipc_msr_staff_names),
     variable = factor(variable, levels = rev(ipc_msr_staff_names))
   )
 
@@ -286,7 +286,7 @@ ipc_dist <- site_char %>%
   dplyr::select(record_id, matches("distance_")) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!ipc_dist_names),
+    variable = dplyr::recode(variable, !!!ipc_dist_names),
     variable = factor(variable, levels = rev(ipc_dist_names))
   )
 
@@ -299,7 +299,7 @@ ipc_env <- site_char %>%
   dplyr::select(record_id, matches("envmt_")) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!ipc_env_names),
+    variable = dplyr::recode(variable, !!!ipc_env_names),
     variable = factor(variable, levels = rev(ipc_env_names))
   )
 ```
@@ -339,7 +339,7 @@ care_changes <- site_char %>%
   dplyr::select(all_of(c("record_id", names(care_names)))) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!care_names),
+    variable = dplyr::recode(variable, !!!care_names),
     variable = factor(variable, levels = rev(care_names))
   )
 
@@ -354,7 +354,7 @@ care_dot_changes <- site_char %>%
   dplyr::select(record_id, matches("changes_dot")) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!care_dot_names),
+    variable = dplyr::recode(variable, !!!care_dot_names),
     variable = factor(variable, levels = rev(care_dot_names))
   )
 ```
@@ -374,7 +374,7 @@ restr <- site_char %>%
   dplyr::select(record_id, matches("restr_"), -matches("tb_restr")) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!restr_names),
+    variable = dplyr::recode(variable, !!!restr_names),
     variable = factor(variable, levels = rev(restr_names))
   )
 
@@ -389,7 +389,7 @@ restr_addr <- site_char %>%
   dplyr::select(record_id, matches("tb_restr_addr_")) %>%
   melt("record_id") %>%
   mutate(
-    variable = recode(variable, !!!restr_addr_names),
+    variable = dplyr::recode(variable, !!!restr_addr_names),
     variable = factor(variable, levels = rev(restr_addr_names))
   )
 ```
@@ -607,7 +607,7 @@ site_surv <- rbind(
   # care_dot_changes %>% mutate(type = types[9])
 ) %>%
   mutate(
-    value = recode(value, !!!val_labs),
+    value = dplyr::recode(value, !!!val_labs),
     value = factor(value, levels = rev(unique(val_labs))),
     type = factor(type, levels = types),
     variable = factor(variable, levels = c(
@@ -670,6 +670,13 @@ save_plot(
   w = 16,
   h = 23
 )
+
+save_plot(
+  site_surv_pl,
+  pdf_file = "results/survey.tif",
+  w = 16,
+  h = 23
+)
 ```
 
 
@@ -719,13 +726,13 @@ ipc <- rbind(
 ) %>%
   left_join(site_char_main, by = "record_id") %>%
   mutate(
-    value = recode(value, !!!val_labs)
+    value = dplyr::recode(value, !!!val_labs)
   ) %>%
   filter(!(value %in% c("Information not available", "Not applicable"))) %>%
   rename(ipc = variable) %>%
   melt(c("record_id", "type", "ipc", "value"), value.name = "char") %>%
   mutate(
-    variable = recode(variable, !!!main_char_names),
+    variable = dplyr::recode(variable, !!!main_char_names),
     value = factor(value, levels = rev(rev(unique(val_labs))[-c(1:2)]))
   )
 
@@ -831,6 +838,13 @@ ipc_assoc_pl <- ipc_assoc_pl & theme(legend.position = "bottom")
 save_plot(
   ipc_assoc_pl,
   pdf_file = "results/ipc-association.png",
+  w = 16,
+  h = 14
+)
+
+save_plot(
+  ipc_assoc_pl,
+  pdf_file = "results/ipc-association.tif",
   w = 16,
   h = 14
 )
@@ -964,71 +978,6 @@ cor_by_group("site_integration")
 cor_by_group("site_carelevel")
 cor_by_group("site_owner")
 ```
-
-### Granger causality
-
-```{r granger}
-library(plm)
-library(car)
-
-cases_art <- pdata.frame(
-  qtr_df %>%
-    group_by(record_id) %>%
-    filter(all(!is.na(new)) & all(!is.na(art))) %>%
-    arrange(year_quart) %>%
-    mutate(time = 1:n()) %>%
-    mutate(
-      new = log1p(new),
-      art = log1p(art),
-      genex = log1p(genex),
-    ) %>%
-    ungroup() %>%
-    dplyr::select(record_id, time, year, quarter, new, art),
-  index = c("record_id", "time")
-)
-
-n_distinct(cases_art$record_id)
-
-pgrangertest(new ~ art, data = cases_art, order = 4L)
-pgrangertest(art ~ new, data = cases_art, order = 4L)
-
-pgrangertest(new ~ art, data = cases_art, order = 2L)
-pgrangertest(art ~ new, data = cases_art, order = 2L)
-
-plm_lag_art <- plm(
-  new ~ lag(new, 1:4) + lag(art, 1:4) + factor(quarter) + factor(year),
-  data = cases_art,
-  model = "fd"
-)
-
-summary(plm_lag_art)
-
-xnames <- names(coef(plm_lag_art))
-xnames <- xnames[grepl("art,", xnames)]
-linearHypothesis(plm_lag_art, xnames)
-
-plm_lag_new <- plm(
-  art ~ lag(new, 1:4) + lag(art, 1:4) + factor(quarter) + factor(year),
-  data = cases_art,
-  model = "fd"
-)
-
-summary(plm_lag_new)
-
-xnames2 <- names(coef(plm_lag_new))
-xnames2 <- xnames2[grepl("new,", xnames2)]
-linearHypothesis(plm_lag_new, xnames2)
-
-
-plm_cor <- plm(
-  new ~ genex + factor(quarter) + factor(year),
-  data = cases_art,
-  model = "fd"
-)
-
-summary(plm_cor)
-```
-
 
 ## Imputation
 
@@ -1416,33 +1365,30 @@ pred_df <- bind_rows(
   pred_new %>%
     mutate(outcome = "Newly diagnosed TB cases") %>%
     mutate(subgroup = site_region),
-  # pred_new %>%
-  #   mutate(outcome = "Newly diagnosed TB cases") %>%
-  #   mutate(subgroup = site_integration),
   pred_art %>%
     mutate(outcome = "New patients on ART") %>%
     mutate(subgroup = "Global"),
   pred_art %>%
     mutate(outcome = "New patients on ART") %>%
     mutate(subgroup = site_region),
-  # pred_art %>%
-  #   mutate(outcome = "New patients on ART") %>%
-  #   mutate(subgroup = site_integration),
   pred_genex %>%
     mutate(outcome = "Number of GeneXpert done") %>%
     mutate(subgroup = "Global"),
   pred_genex %>%
     mutate(outcome = "Number of GeneXpert done") %>%
     mutate(subgroup = site_region),
-  # pred_genex %>%
-  #   mutate(outcome = "Number of GeneXpert done") %>%
-  #   mutate(subgroup = site_integration)
 )
 
 subgroup_lab <- c(
   "Global" = "Global",
   "Africa" = "Africa",
   "Asia-Pacific" = "Asia Pacific"
+)
+
+outcome_lab <- c(
+  "Newly diagnosed TB cases" = "Number of people newly\ndiagnosed with TB",
+  "Number of GeneXpert done" = "Number of Xpert tests\nperformed",
+  "New patients on ART" = "Number of people newly\nstarted on ART"
 )
 
 est_cases <- pred_df %>%
@@ -1453,25 +1399,12 @@ est_cases <- pred_df %>%
   median_qi() %>%
   ungroup() %>%
   filter(year_quart <= 2023) %>%
-  # mutate(
-  #   forecast = ifelse(year_quart > 2023.25, "Forecast", "Observed"),
-  #   forecast = factor(forecast, levels = c("Forecast", "Observed"))
-  # ) %>%
-  # group_by(outcome, subgroup) %>%
-  # mutate(type = data.table::rleid(forecast)) %>%
-  # ungroup() %>%
   mutate(
     outcome = dplyr::recode(outcome, !!!outcome_lab),
     subgroup = dplyr::recode(subgroup, !!!subgroup_lab),
     outcome = factor(outcome, levels = outcome_lab),
     subgroup = factor(subgroup, levels = subgroup_lab)
   )
-
-# est_cases <- rbind(
-#   est_cases,
-#   est_cases[est_cases$year_quart == 2023.25, ] %>%
-#     mutate(type = 2, forecast = "Forecast")
-# )
 
 pl <- ggplot(
   data = est_cases,
@@ -1518,6 +1451,12 @@ pl <- ggplot(
 save_plot(
   pl,
   pdf_file = "results/imputed-outcomes.png",
+  w = 16, h = 14
+)
+
+save_plot(
+  pl,
+  pdf_file = "results/imputed-outcomes.tif",
   w = 16, h = 14
 )
 ```
@@ -1603,7 +1542,7 @@ tpt_pl <- ggplot(
   facet_wrap(
     ~subgroup,
     dir = "h",
-    ncol = 3,
+    nrow = 3,
     scales = "free"
   ) +
   scale_color_manual(values = c("darkred", "black")) +
@@ -1634,6 +1573,12 @@ tpt_pl <- ggplot(
 save_plot(
   tpt_pl,
   pdf_file = "results/tpt-imputed.png",
-  w = 16, h = 5
+  w = 10, h = 15
+)
+
+save_plot(
+  tpt_pl,
+  pdf_file = "results/tpt-imputed.tif",
+  w = 10, h = 15
 )
 ```
